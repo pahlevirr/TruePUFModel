@@ -1,0 +1,324 @@
+theory Chain_PUF
+begin
+
+builtins: hashing
+
+functions: puf/2 [private], pufn/3 [private], nxt/2, zf/3
+
+rule Manufacture:
+  [ Fr(~t) ] --[ Make($D, ~t) ]-> [ !Dev($D, ~t) ]
+
+restriction OneFingerprintPerDevice:
+  "All D t1 t2 #i #j. Make(D,t1)@i & Make(D,t2)@j ==> t1 = t2"
+
+rule PUFok:
+  [ PUFin(D,c), !Dev(D,t) ]
+  --[ PUF(D,c) ]->
+  [ PUFout(D,c,puf(t,c)) ]
+
+rule PUFnoisy:
+  [ PUFin(D,c), !Dev(D,t), Fr(~n) ]
+  --[ PUF(D,c), RepFail(D,c) ]->
+  [ PUFout(D,c,pufn(t,c,~n)) ]
+
+restriction OneEnrollmentPerDevice:
+  "All A1 A2 D #i #j. Enrolled(A1,D)@i & Enrolled(A2,D)@j ==> #i = #j"
+
+#ifdef SMALL_CAP
+
+rule Enroll:
+  [ !Dev(D,t), Fr(~dl) ]
+  --[ Enrolled($A,D), CRP($A,D,'c0') ]->
+  [ !CRPout($A,D,'c0',puf(t,'c0')), !Reg($A,D), !DevSec(D,~dl)
+  , !Avail($A,D,'c0'), !PAvail(D,$A,'c0')
+ ]
+#else
+
+rule Enroll:
+  [ !Dev(D,t), Fr(~c0), Fr(~dl) ]
+  --[ Enrolled($A,D), CRP($A,D,~c0), CRP($A,D,nxt(~c0,~dl)) ]->
+  [ !CRPout($A,D,~c0,puf(t,~c0))
+  , !CRPout($A,D,nxt(~c0,~dl),puf(t,nxt(~c0,~dl)))
+  , !Reg($A,D), !DevSec(D,~dl)
+  , !Avail($A,D,~c0), !PAvail(D,$A,~c0)
+  , Unused($A,D,~c0), Unused($A,D,nxt(~c0,~dl))
+  , PUnused(D,$A,~c0), PUnused(D,$A,nxt(~c0,~dl))
+  , !Link($A,D,~c0,nxt(~c0,~dl)), !Link($A,D,nxt(~c0,~dl),'end')
+  , !PLink(D,$A,~c0,nxt(~c0,~dl)), !PLink(D,$A,nxt(~c0,~dl),'end') ]
+#endif
+
+restriction EnrollBeforeDeploy:
+  "All A D c1 c2 #i #j. CRP(A,D,c1)@i & PUF(D,c2)@j ==> #i < #j"
+
+#ifdef SMALL_CAP
+restriction C_DeviceAnswersOnlyC0:
+  "All D c #i. PUF(D,c)@i ==> c = 'c0'"
+restriction C_PhysicalAccessOnlyC0:
+  "All D c #i. BreakPUF(D,c)@i ==> c = 'c0'"
+#endif
+
+rule BreakPUF:
+  [ !Dev(D,t), In(<D,c>) ]
+  --[ BreakPUF(D,c) ]->
+  [ Out(puf(t,c)) ]
+
+rule RevealCRP:
+  [ !CRPout(A,D,c,r) ]
+  --[ RevealCRP(A,D,c) ]->
+  [ Out(<c,r>) ]
+
+rule ModelClean:
+  [ !Dev(D,t), In(<D,c,puf(t,c1)>) ]
+  --[ Model(D) ]->
+  [ Out(puf(t,c)) ]
+
+rule LeakSeed:
+  [ !DevSec(D,dl) ]
+  --[ LeakSeed(D) ]->
+  [ Out(dl) ]
+
+rule Collide:
+  [ !Dev(D,t) ]
+  --[ Collide(D,$D2), Make($D2,t) ]->
+  [ !Dev($D2,t), !Collider($D2) ]
+
+rule ColliderQuery:
+  [ !Dev(D2,t), !Collider(D2), In(c) ]
+  --[ ColliderQuery(D2,c) ]->
+  [ Out(puf(t,c)) ]
+
+restriction CollideDistinct:
+  "All D D2 #i. Collide(D,D2)@i ==> not (D = D2)"
+
+restriction AtMostOneCollision:
+  "All D1 D2 D3 D4 #i #j. Collide(D1,D2)@i & Collide(D3,D4)@j ==> #i = #j"
+
+#ifdef ASSUME_UNIQUE
+restriction U_Uniqueness:
+  "not (Ex D D2 #i. Collide(D,D2)@i)"
+#endif
+
+#ifdef ASSUME_RELIABLE
+restriction R_ReproductionNeverFails:
+  "not (Ex D c #i. RepFail(D,c)@i)"
+#endif
+
+#ifdef ASSUME_INDEP
+restriction I_Independence:
+  "not (Ex D #i. Model(D)@i)"
+#endif
+
+restriction NotExhausted:
+  "All A D c xp #i. Start(A,D,c,xp)@i ==> not (c = 'end')"
+
+#ifdef SMALL_CAP
+#else
+
+restriction StartOnlyCurrent:
+  "All A D c xp xp2 #i #j. Start(A,D,c,xp)@i & ChaOk(A,D,c,xp2)@j
+     ==> not (#j < #i)"
+restriction RespOnlyCurrent:
+  "All D A c xp #i #j. PResp(D,A,c)@i & PAck(D,A,c,xp)@j ==> not (#j < #i)"
+#endif
+
+rule P_init:
+  [ !Reg(A,D), !DevSec(D,dl), Fr(~xp) ]
+  --[ PInit(D,A,~xp) ]->
+  [ Out(<D, 'L1', ~xp>), P1(D,A,~xp) ]
+
+rule V_start:
+  [ !Reg(A,D), !Avail(A,D,c), In(<D, 'L1', xp>) ]
+  --[ Start(A,D,c,xp) ]->
+  [ Out(c), VS1(A,D,xp,c) ]
+
+rule P_resp:
+  [ P1(D,A,xp), !PAvail(D,A,c), In(c) ]
+  --[ PResp(D,A,c) ]->
+  [ PUFin(D,c), P2(D,A,xp,c) ]
+
+rule P_cha:
+  [ P2(D,A,xp,c), PUFout(D,c,y) ]
+  -->
+  [ Out(h(<y,c,h(<xp,D>)>)), P3(D,A,xp,c,y) ]
+
+#ifdef SMALL_CAP
+rule V_check:
+  [ VS1(A,D,xp,c), !CRPout(A,D,c,r)
+  , Fr(~M), In(h(<r,c,h(<xp,D>)>)) ]
+  --[ ChaOk(A,D,c,xp) ]->
+  [ Out(<h(<r,D,h(<xp,D>)>), ~M>), VS2(A,D,xp,c,r,~M) ]
+#else
+rule V_check:
+  [ VS1(A,D,xp,c), Unused(A,D,c), !CRPout(A,D,c,r), !Link(A,D,c,cn)
+  , Fr(~M), In(h(<r,c,h(<xp,D>)>)) ]
+  --[ ChaOk(A,D,c,xp) ]->
+  [ Out(<h(<r,D,h(<xp,D>)>), ~M>), VS2(A,D,xp,c,r,~M), !Avail(A,D,cn) ]
+#endif
+
+#ifdef SMALL_CAP
+rule P_ack:
+  [ P3(D,A,xp,c,y), Fr(~xm)
+  , In(<h(<y,D,h(<xp,D>)>), M>) ]
+  --[ Run(D,A,<'DtoA',c,M>), PAck(D,A,c,xp), XmGen(D,~xm) ]->
+  [ Out(<D, h(<y,c,h(<xp,D>)>), zf(M,y,~xm)>)
+  , P4(D,A,c,M,~xm) ]
+#else
+rule P_ack:
+  [ P3(D,A,xp,c,y), PUnused(D,A,c), !PLink(D,A,c,cn), Fr(~xm)
+  , In(<h(<y,D,h(<xp,D>)>), M>) ]
+  --[ Run(D,A,<'DtoA',c,M>), PAck(D,A,c,xp), XmGen(D,~xm) ]->
+  [ Out(<D, h(<y,c,h(<xp,D>)>), zf(M,y,~xm)>)
+  , !PAvail(D,A,cn), P4(D,A,c,M,~xm) ]
+#endif
+
+rule V_final:
+  [ VS2(A,D,xp,c,r,M)
+  , In(<D, h(<r,c,h(<xp,D>)>), zf(M,r,xm)>) ]
+  --[ Commit(A,D,<'DtoA',c,M>), VSess(A,D,c,xp,M), Run(A,D,<'AtoD',c,M>) ]->
+  [ Out(h(<xm, M>)) ]
+
+rule P_fin:
+  [ P4(D,A,c,M,xm), In(h(<xm,M>)) ]
+  --[ Commit(D,A,<'AtoD',c,M>) ]->
+  [ ]
+
+lemma Sanity [heuristic=S]:
+  exists-trace
+  "Ex A D c m xp #s #k #a #i #j.
+     Start(A,D,c,xp)@s & ChaOk(A,D,c,xp)@k & PAck(D,A,c,xp)@a
+     & Commit(A,D,<'DtoA',c,m>)@i & Commit(D,A,<'AtoD',c,m>)@j
+     & s < k & k < a & a < i & i < j"
+
+lemma modelPUF [reuse, use_induction]:
+  "All D #k. Model(D)@k ==>
+     (Ex G c #i. RevealCRP(G,D,c)@i & i < k)
+   | (Ex c #i. BreakPUF(D,c)@i & i < k)
+   | (Ex D2 #i. Collide(D,D2)@i & i < k)
+   | (Ex D2 #i. Collide(D2,D)@i & i < k)"
+
+lemma Secrecy [reuse, use_induction]:
+  "All t c p #k. K(p)@k & p = puf(t,c) ==>
+     (Ex D G #m #i. Make(D,t)@m & RevealCRP(G,D,c)@i & i < k)
+   | (Ex D #m #i. Make(D,t)@m & BreakPUF(D,c)@i & i < k)
+   | (Ex D #m #i. Make(D,t)@m & Model(D)@i & i < k)
+   | (Ex D D2 #m #i. Make(D,t)@m & Collide(D,D2)@i & i < k)"
+
+lemma XmSecret [use_induction]:
+  "All D xm #g #k. XmGen(D,xm)@g & K(xm)@k ==> F"
+
+#ifdef SMALL_CAP
+#else
+
+lemma ChallengeSecrecy [reuse]:
+  "All A D c #e #k. CRP(A,D,c)@e & K(c)@k ==>
+     (Ex n #s. Start(A,D,c,n)@s & s < k)
+   | (Ex #r. RevealCRP(A,D,c)@r & r < k)
+   | (Ex #r. LeakSeed(D)@r & r < k)"
+#endif
+
+lemma Agree_DtoA:
+  "All B C c m #t. Commit(B,C,<'DtoA',c,m>)@t ==>
+     ( (Ex #j. Run(C,B,<'DtoA',c,m>)@j & j < t
+          & not (Ex E F #k. Commit(E,F,<'DtoA',c,m>)@k & not (#k = #t)))
+     | (Ex G c2 #r. RevealCRP(G,C,c2)@r & r < t)
+     | (Ex c2 #r. BreakPUF(C,c2)@r & r < t)
+     | (Ex #r. Model(C)@r & r < t)
+     | (Ex D2 #r. Collide(C,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,C)@r & r < t) )"
+
+lemma Agree_AtoD:
+  "All B C c m #t. Commit(B,C,<'AtoD',c,m>)@t ==>
+     ( (Ex #j. Run(C,B,<'AtoD',c,m>)@j & j < t
+          & not (Ex E F #k. Commit(E,F,<'AtoD',c,m>)@k & not (#k = #t)))
+     | (Ex G c2 #r. RevealCRP(G,B,c2)@r & r < t)
+     | (Ex c2 #r. BreakPUF(B,c2)@r & r < t)
+     | (Ex #r. Model(B)@r & r < t)
+     | (Ex D2 #r. Collide(B,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,B)@r & r < t) )"
+
+#ifdef SMALL_CAP
+lemma DeviceAuth_byClass:
+  "All A D x c n m #t. Commit(A,D,x)@t & VSess(A,D,c,n,m)@t & x = <'DtoA',c,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex G #r. RevealCRP(G,D,c)@r & r < t)
+     | (Ex #r. BreakPUF(D,c)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+#else
+lemma DeviceAuth_byClass:
+  "All A D x c n m #t. Commit(A,D,x)@t & VSess(A,D,c,n,m)@t & x = <'DtoA',c,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex #r. RevealCRP(A,D,c)@r & r < t)
+     | (Ex n2 #w #k. Start(A,D,c,n2)@w & BreakPUF(D,c)@k & w < k & k < t)
+     | (Ex #r. LeakSeed(D)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+#endif
+
+lemma Contrast_ExactOrOnlineOnly:
+  "All A D x c n m #t. Commit(A,D,x)@t & VSess(A,D,c,n,m)@t & x = <'DtoA',c,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex #r. RevealCRP(A,D,c)@r & r < t)
+     | (Ex n2 #w #k. Start(A,D,c,n2)@w & BreakPUF(D,c)@k & w < k & k < t)
+     | (Ex #r. LeakSeed(D)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+
+lemma Att_Splice:
+  exists-trace
+  "Ex A D c n m #i #j. Commit(A,D,<'DtoA',c,m>)@i & VSess(A,D,c,n,m)@i
+     & Run(D,A,<'DtoA',c,m>)@j
+     & not (Ex #k. PAck(D,A,c,n)@k)
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G D1 c1 #k. RevealCRP(G,D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)
+     & not (Ex D1 #k. LeakSeed(D1)@k)"
+
+lemma FailNoAdvance:
+  exists-trace
+  "Ex A D c n1 n2 #i #j #k. Start(A,D,c,n1)@i & RepFail(D,c)@j
+     & Start(A,D,c,n2)@k & i < j & j < k"
+
+lemma Att_Collide:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,m>)@i & VSess(A,D,c,n,m)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,m>)@j)
+     & (Ex D2 #k. Collide(D,D2)@k)
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G D1 c1 #k. RevealCRP(G,D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+#ifdef SMALL_CAP
+lemma Att_Model:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,m>)@i & VSess(A,D,c,n,m)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,m>)@j)
+     & (Ex #k. Model(D)@k)
+     & not (Ex G #k. RevealCRP(G,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k)
+     & not (Ex D2 #k. Collide(D,D2)@k)"
+#else
+
+lemma Att_Model:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,m>)@i & VSess(A,D,c,n,m)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,m>)@j)
+     & (Ex G c2 #r2. RevealCRP(G,D,c2)@r2 & not (c = c2))
+     & (Ex #k. Model(D)@k)
+     & not (Ex G #k. RevealCRP(G,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k)
+     & not (Ex D2 #k. Collide(D,D2)@k)"
+#endif
+
+lemma Att_RepFail:
+  exists-trace
+  "Ex D c #i. RepFail(D,c)@i"
+
+end

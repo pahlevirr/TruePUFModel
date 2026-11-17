@@ -1,0 +1,251 @@
+theory T2T_PUF
+begin
+
+builtins: hashing
+
+functions: puf/2 [private], pufn/3 [private], ox/2
+
+rule Setup:
+  [ Fr(~tD), Fr(~tG), Fr(~x1), Fr(~x2), Fr(~w1), Fr(~w2) ]
+  --[ Enrolled('gw','thing'), SetupX(~x1,~x2,~w1,~w2), DevTokD(~tD), DevTokG(~tG) ]->
+  [ !Dev('thing',~tD), !Dev('gw',~tG), !Reg('gw','thing')
+  , !ThingECRP('thing','gw',~x1,~x2,
+      ox(puf(~tG,puf(~tD,~x1)), puf(~tG,puf(~tD,~x2))))
+  , !GwECRP('gw','thing',<puf(~tG,~w1),puf(~tG,~w2)>,
+      ox(puf(~tD,puf(~tG,~w1)), puf(~tD,puf(~tG,~w2))), ~w1, ~w2) ]
+
+restriction OneSetup:
+  "All G1 D1 G2 D2 #i #j. Enrolled(G1,D1)@i & Enrolled(G2,D2)@j ==> #i = #j"
+
+restriction EnrollBeforeDeploy:
+  "All G D X c #i #j. Enrolled(G,D)@i & PUF(X,c)@j ==> #i < #j"
+
+rule BreakPUF:
+  [ !Dev(D,t), In(<D,ca,cb>) ]
+  --[ BreakPUF(D,<ca,cb>) ]->
+  [ Out(<puf(t,ca),puf(t,cb)>) ]
+
+rule RevealCRP:
+  [ !GwECRP(G,D,zp,b1,w1,w2) ]
+  --[ RevealCRP(G,D,zp) ]->
+  [ Out(<w1,w2,b1>) ]
+
+rule ModelClean:
+  [ !Dev(D,t), In(<D,c,c1,puf(t,c1)>) ]
+  --[ Model(D) ]->
+  [ Out(puf(t,c)) ]
+
+rule LeakFW:
+  [ !ThingECRP(D,G,x1,x2,a1) ]
+  --[ LeakFW(D) ]->
+  [ Out(<x1,x2,a1>) ]
+
+rule Collide:
+  [ !Dev(D,t) ]
+  --[ Collide(D,$D2) ]->
+  [ !Dev($D2,t), !Collider($D2) ]
+
+rule ColliderQuery:
+  [ !Dev(D2,t), !Collider(D2), In(c) ]
+  --[ ColliderQuery(D2,c) ]->
+  [ Out(puf(t,c)) ]
+
+restriction CollideDistinct:
+  "All D D2 #i. Collide(D,D2)@i ==> not (D = D2)"
+
+restriction AtMostOneCollision:
+  "All D1 D2 D3 D4 #i #j. Collide(D1,D2)@i & Collide(D3,D4)@j ==> #i = #j"
+
+#ifdef ASSUME_UNIQUE
+restriction U_Uniqueness:
+  "not (Ex D D2 #i. Collide(D,D2)@i)"
+#endif
+
+#ifdef ASSUME_RELIABLE
+restriction R_ReproductionNeverFails:
+  "not (Ex D c #i. RepFail(D,c)@i)"
+#endif
+
+#ifdef ASSUME_INDEP
+restriction I_Independence:
+  "not (Ex D #i. Model(D)@i)"
+#endif
+
+rule D_req:
+  [ !ThingECRP(D,G,x1,x2,a1), !Dev(D,t), Fr(~nD) ]
+  --[ PUF(D,x1), PUF(D,x2) ]->
+  [ Out(<'req',D,~nD,puf(t,x1),puf(t,x2)>), D2(D,G,a1,~nD) ]
+
+rule D_req_noisy:
+  [ !ThingECRP(D,G,x1,x2,a1), !Dev(D,t), Fr(~nD), Fr(~e) ]
+  --[ PUF(D,x1), PUF(D,x2), RepFail(D,x1) ]->
+  [ Out(<'req',D,~nD,pufn(t,x1,~e),pufn(t,x2,~e)>), D2(D,G,a1,~nD) ]
+
+rule G_chal:
+  [ In(<'req',D,nD,y1,y2>), !GwECRP(G,D,zp,b1,w1,w2), !Dev(G,tG), Fr(~n0) ]
+  --[ Start(G,D,zp,~n0), PUF(G,y1), PUF(G,y2), Run(G,D,<'AtoD',nD,~n0>) ]->
+  [ Out(<'chg',G,~n0,zp,h(<h(<ox(puf(tG,y1),puf(tG,y2)),<nD,~n0>>),nD,~n0>)>)
+  , G2(G,D,zp,b1,nD,~n0) ]
+
+rule G_chal_noisy:
+  [ In(<'req',D,nD,y1,y2>), !GwECRP(G,D,zp,b1,w1,w2), !Dev(G,tG), Fr(~n0), Fr(~e) ]
+  --[ Start(G,D,zp,~n0), PUF(G,y1), PUF(G,y2), RepFail(G,y1)
+    , Run(G,D,<'AtoD',nD,~n0>) ]->
+  [ Out(<'chg',G,~n0,zp,h(<h(<ox(pufn(tG,y1,~e),pufn(tG,y2,~e)),<nD,~n0>>),nD,~n0>)>)
+  , G2(G,D,zp,b1,nD,~n0) ]
+
+rule D_check:
+  [ D2(D,G,a1,nD), !Dev(D,t)
+  , In(<'chg',G,n0,<z1,z2>,h(<h(<a1,<nD,n0>>),nD,n0>)>) ]
+  --[ ProofD(D,nD,n0), Commit(D,G,<'AtoD',nD,n0>), PUF(D,z1), PUF(D,z2)
+    , Run(D,G,<'DtoA',<z1,z2>,nD>) ]->
+  [ Out(<'proof',D,h(<h(<ox(puf(t,z1),puf(t,z2)),<nD,n0>>),n0,nD>)>) ]
+
+rule D_check_noisy:
+  [ D2(D,G,a1,nD), !Dev(D,t), Fr(~e)
+  , In(<'chg',G,n0,<z1,z2>,h(<h(<a1,<nD,n0>>),nD,n0>)>) ]
+  --[ ProofD(D,nD,n0), Commit(D,G,<'AtoD',nD,n0>), PUF(D,z1), PUF(D,z2), RepFail(D,z1)
+    , Run(D,G,<'DtoA',<z1,z2>,nD>) ]->
+  [ Out(<'proof',D,h(<h(<ox(pufn(t,z1,~e),pufn(t,z2,~e)),<nD,n0>>),n0,nD>)>) ]
+
+rule G_final:
+  [ G2(G,D,zp,b1,nD,n0)
+  , In(<'proof',D,h(<h(<b1,<nD,n0>>),n0,nD>)>) ]
+  --[ Commit(G,D,<'DtoA',zp,nD>), VSess(G,D,zp,n0,nD) ]->
+  [ ]
+
+lemma H_X1 [reuse]:
+  "All x1 x2 w1 w2 #i #k. SetupX(x1,x2,w1,w2)@i & !KU(x1)@k ==> (Ex D #l. LeakFW(D)@l & l < k)"
+lemma H_X2 [reuse]:
+  "All x1 x2 w1 w2 #i #k. SetupX(x1,x2,w1,w2)@i & !KU(x2)@k ==> (Ex D #l. LeakFW(D)@l & l < k)"
+
+lemma H_W1 [reuse]:
+  "All x1 x2 w1 w2 #i #k. SetupX(x1,x2,w1,w2)@i & !KU(w1)@k ==> (Ex G D zp #l. RevealCRP(G,D,zp)@l & l < k)"
+lemma H_W2 [reuse]:
+  "All x1 x2 w1 w2 #i #k. SetupX(x1,x2,w1,w2)@i & !KU(w2)@k ==> (Ex G D zp #l. RevealCRP(G,D,zp)@l & l < k)"
+
+lemma H_PufD [reuse, use_induction]:
+  "All t c #i #k. DevTokD(t)@i & !KU(puf(t,c))@k ==>
+     ( (Ex x1 x2 w1 w2 #s. SetupX(x1,x2,w1,w2)@s & (c = x1 | c = x2))
+     | (Ex ca cb #l. BreakPUF('thing',<ca,cb>)@l & l < k)
+     | (Ex #l. Model('thing')@l & l < k)
+     | (Ex D2 #l. Collide('thing',D2)@l & l < k)
+     | (Ex D2 #l. Collide(D2,'thing')@l & l < k) )"
+
+lemma H_PufG [reuse, use_induction]:
+  "All t c #i #k. DevTokG(t)@i & !KU(puf(t,c))@k ==>
+     ( (Ex x1 x2 w1 w2 #s. SetupX(x1,x2,w1,w2)@s & (c = w1 | c = w2))
+     | (Ex ca cb #l. BreakPUF('gw',<ca,cb>)@l & l < k)
+     | (Ex #l. Model('gw')@l & l < k)
+     | (Ex D2 #l. Collide('gw',D2)@l & l < k)
+     | (Ex D2 #l. Collide(D2,'gw')@l & l < k) )"
+
+lemma H_B1 [reuse]:
+  "All x1 x2 w1 w2 tD tG #i #a #b #k. SetupX(x1,x2,w1,w2)@i & DevTokD(tD)@a & DevTokG(tG)@b
+     & !KU(ox(puf(tD,puf(tG,w1)),puf(tD,puf(tG,w2))))@k ==>
+     ( (Ex G D zp #l. RevealCRP(G,D,zp)@l & l < k)
+     | (Ex ca cb #l. BreakPUF('thing',<ca,cb>)@l & l < k)
+     | (Ex #l. Model('thing')@l & l < k)
+     | (Ex D2 #l. Collide('thing',D2)@l & l < k)
+     | (Ex D2 #l. Collide(D2,'thing')@l & l < k) )"
+
+lemma Agree_DtoA_ni [reuse]:
+  "All G D zp nD #t. Commit(G,D,<'DtoA',zp,nD>)@t ==>
+     ( (Ex #j. Run(D,G,<'DtoA',zp,nD>)@j & j < t)
+     | (Ex G2 zp2 #r. RevealCRP(G2,D,zp2)@r & r < t)
+     | (Ex c2 #r. BreakPUF(D,c2)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+
+lemma H_ModelPre [reuse, use_induction]:
+  "All D #i. Model(D)@i ==>
+     ( (Ex D1 #l. LeakFW(D1)@l & l < i)
+     | (Ex G D1 zp #l. RevealCRP(G,D1,zp)@l & l < i)
+     | (Ex D1 c #l. BreakPUF(D1,c)@l & l < i)
+     | (Ex D1 D2 #l. Collide(D1,D2)@l & l < i) )"
+
+lemma H_Z1 [reuse]:
+  "All x1 x2 w1 w2 t #i #a #k. SetupX(x1,x2,w1,w2)@i & DevTokG(t)@a & !KU(puf(t,w1))@k ==>
+     ( (Ex G D zp n #s. Start(G,D,zp,n)@s & s < k)
+     | (Ex ca cb #l. BreakPUF('gw',<ca,cb>)@l & l < k)
+     | (Ex #l. Model('gw')@l & l < k)
+     | (Ex D2 #l. Collide('gw',D2)@l & l < k)
+     | (Ex D2 #l. Collide(D2,'gw')@l & l < k) )"
+lemma H_Z2 [reuse]:
+  "All x1 x2 w1 w2 t #i #a #k. SetupX(x1,x2,w1,w2)@i & DevTokG(t)@a & !KU(puf(t,w2))@k ==>
+     ( (Ex G D zp n #s. Start(G,D,zp,n)@s & s < k)
+     | (Ex ca cb #l. BreakPUF('gw',<ca,cb>)@l & l < k)
+     | (Ex #l. Model('gw')@l & l < k)
+     | (Ex D2 #l. Collide('gw',D2)@l & l < k)
+     | (Ex D2 #l. Collide(D2,'gw')@l & l < k) )"
+
+lemma H_ProofOnce [reuse]:
+  "All D nD n0 n0b #i #j. ProofD(D,nD,n0)@i & ProofD(D,nD,n0b)@j ==> #i = #j"
+
+lemma H_VSessOnce [reuse]:
+  "All G D zp n0 nD G2 D2 zp2 nD2 #i #j. VSess(G,D,zp,n0,nD)@i & VSess(G2,D2,zp2,n0,nD2)@j ==> #i = #j"
+
+lemma H_ProofSrc [reuse]:
+  "All G D zp n0 nD #t. VSess(G,D,zp,n0,nD)@t ==>
+     ( (Ex #j. ProofD(D,nD,n0)@j & j < t)
+     | (Ex G2 zp2 #r. RevealCRP(G2,D,zp2)@r & r < t)
+     | (Ex c2 #r. BreakPUF(D,c2)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+
+lemma Sanity:
+  exists-trace
+  "Ex G D zp n0 nD #w #a #b #c #i.
+     Start(G,D,zp,n0)@w & Run(G,D,<'AtoD',nD,n0>)@a & Commit(D,G,<'AtoD',nD,n0>)@b
+     & Run(D,G,<'DtoA',zp,nD>)@c & Commit(G,D,<'DtoA',zp,nD>)@i
+     & w < b & b < i
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G1 D1 c1 #k. RevealCRP(G1,D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 #k. LeakFW(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Agree_DtoA:
+  "All G D zp nD #t. Commit(G,D,<'DtoA',zp,nD>)@t ==>
+     ( (Ex #j. Run(D,G,<'DtoA',zp,nD>)@j & j < t
+          & not (Ex E F #k. Commit(E,F,<'DtoA',zp,nD>)@k & k < t))
+     | (Ex G2 zp2 #r. RevealCRP(G2,D,zp2)@r & r < t)
+     | (Ex c2 #r. BreakPUF(D,c2)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+
+lemma Agree_AtoD:
+  "All G D nD n0 #t. Commit(D,G,<'AtoD',nD,n0>)@t ==>
+     ( (Ex #j. Run(G,D,<'AtoD',nD,n0>)@j & j < t
+          & not (Ex E F #k. Commit(E,F,<'AtoD',nD,n0>)@k & k < t))
+     | (Ex c2 #r. BreakPUF(G,c2)@r & r < t)
+     | (Ex #r. Model(G)@r & r < t)
+     | (Ex D2 #r. Collide(G,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,G)@r & r < t)
+     | (Ex #r. LeakFW(D)@r & r < t) )"
+
+lemma Att_Collide:
+  exists-trace
+  "Ex G D zp n0 nD #i. Commit(G,D,<'DtoA',zp,nD>)@i & VSess(G,D,zp,n0,nD)@i
+     & not (Ex #j. Run(D,G,<'DtoA',zp,nD>)@j)
+     & (Ex D2 #k. Collide(D,D2)@k)
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G1 D1 c1 #k. RevealCRP(G1,D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 #k. LeakFW(D1)@k)"
+
+lemma Att_Model:
+  exists-trace
+  "Ex G D zp n0 nD #i. Commit(G,D,<'DtoA',zp,nD>)@i & VSess(G,D,zp,n0,nD)@i
+     & not (Ex #j. Run(D,G,<'DtoA',zp,nD>)@j)
+     & (Ex #k. Model(D)@k)
+     & not (Ex D2 #k. Collide(D,D2)@k)"
+
+lemma Att_RepFail:
+  exists-trace
+  "Ex D c #i. RepFail(D,c)@i"
+
+end

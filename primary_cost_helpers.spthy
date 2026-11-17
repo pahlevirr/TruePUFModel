@@ -1,0 +1,1149 @@
+theory PUF_assumptions
+begin
+
+builtins: hashing
+
+functions: puf/2 [private], pufn/3 [private], gen/1, rep/2
+equations: rep(pufn(t,c,n), gen(puf(t,c))) = puf(t,c)
+
+rule Manufacture:
+  [ Fr(~t) ] --[ Make($D, ~t) ]-> [ !Dev($D, ~t) ]
+
+restriction OneFingerprintPerDevice:
+  "All D t1 t2 #i #j. Make(D,t1)@i & Make(D,t2)@j ==> t1 = t2"
+
+rule PUF:
+  [ PUFin(D,c), !Dev(D,t), Fr(~n) ]
+  --[ PUF(D,c) ]->
+  [ PUFout(D,c,pufn(t,c,~n)) ]
+
+#ifdef SMALL_CAP
+
+rule Enroll:
+  [ !Dev(D,t) ]
+  --[ CRP($A,D,'c0') ]->
+  [ !CRPout($A,D,'c0',puf(t,'c0')) ]
+#else
+
+rule Enroll:
+  [ !Dev(D,t), Fr(~c) ]
+  --[ CRP($A,D,~c) ]->
+  [ !CRPout($A,D,~c,puf(t,~c)), CRPunused($A,D,~c) ]
+#endif
+
+restriction EnrollBeforeDeploy:
+  "All A D c1 c2 #i #j. CRP(A,D,c1)@i & PUF(D,c2)@j ==> #i < #j"
+
+#ifdef SMALL_CAP
+
+restriction C_DeviceAnswersOnlyC0:
+  "All D c #i. PUF(D,c)@i ==> c = 'c0'"
+restriction C_PhysicalAccessOnlyC0:
+  "All D c #i. BreakPUF(D,c)@i ==> c = 'c0'"
+#endif
+
+rule BreakPUF:
+  [ !Dev(D,t), In(<D,c>), Fr(~n) ]
+  --[ BreakPUF(D,c) ]->
+  [ Out(pufn(t,c,~n)) ]
+
+rule RevealCRP:
+  [ !CRPout(A,D,c,r) ]
+  --[ RevealCRP(A,D,c) ]->
+  [ Out(<c,r>) ]
+
+rule BreakGen:
+  [ !Dev(D,t), In(gen(puf(t,c))) ]
+  --[ BreakGen(D,c) ]->
+  [ Out(puf(t,c)) ]
+
+rule ModelClean:
+  [ !Dev(D,t), In(<D,c,puf(t,c1)>), Fr(~n) ]
+  --[ Model(D) ]->
+  [ Out(pufn(t,c,~n)) ]
+
+rule ModelNoisy:
+  [ !Dev(D,t), In(<D,c,pufn(t,c1,n1)>), Fr(~n) ]
+  --[ Model(D) ]->
+  [ Out(pufn(t,c,~n)) ]
+
+rule Collide:
+  [ !Dev(D,t) ]
+  --[ Collide(D,$D2), Make($D2,t) ]->
+  [ !Dev($D2,t) ]
+
+restriction CollideDistinct:
+  "All D D2 #i. Collide(D,D2)@i ==> not (D = D2)"
+
+restriction AtMostOneCollision:
+  "All D1 D2 D3 D4 #i #j. Collide(D1,D2)@i & Collide(D3,D4)@j ==> #i = #j"
+
+#ifdef ASSUME_UNIQUE
+restriction U_Uniqueness:
+  "not (Ex D D2 #i. Collide(D,D2)@i)"
+#endif
+
+#ifdef ASSUME_RELIABLE
+restriction R_HelperDataSecure:
+  "not (Ex D c #i. BreakGen(D,c)@i)"
+restriction R_ReproductionNeverFails:
+  "not (Ex D A c #i. RepFail(D,A,c)@i)"
+#endif
+
+#ifdef ASSUME_INDEP
+restriction I_Independence:
+  "not (Ex D #i. Model(D)@i)"
+#endif
+
+#ifdef SMALL_CAP
+rule A_start:
+  [ !CRPout(A,D,c,r), Fr(~n) ]
+  --[ Start(A,D,c,~n) ]->
+  [ Out(<A,D,c,~n,gen(r)>), A_wait(A,D,c,~n,r) ]
+#else
+rule A_start:
+  [ !CRPout(A,D,c,r), CRPunused(A,D,c), Fr(~n) ]
+  --[ Start(A,D,c,~n) ]->
+  [ Out(<A,D,c,~n,gen(r)>), A_wait(A,D,c,~n,r) ]
+#endif
+
+rule A_finish:
+  [ A_wait(A,D,c,n,r), In(<D,A,m,h(A,r,c,n,m)>) ]
+  --[ Run(A,D,<'AtoD',c,n,m>), Commit(A,D,<'DtoA',c,n,m>) ]->
+  [ Out(<A,D,h(r,m)>) ]
+
+rule D_recv:
+  [ In(<A,D,c,n,hp>), Fr(~m) ]
+  --[ Run(D,A,<'DtoA',c,n,~m>) ]->
+  [ PUFin(D,c), D_wait(D,A,c,n,~m,hp) ]
+
+rule D_resp:
+  [ D_wait(D,A,c,n,m,hp), PUFout(D,c,y) ]
+  -->
+  [ Out(<D,A,m,h(A,rep(y,hp),c,n,m)>), D_wait2(D,A,rep(y,hp),c,n,m) ]
+
+rule D_fail:
+  [ D_wait(D,A,c,n,m,hp), PUFout(D,c,y) ]
+  --[ RepFail(D,A,c) ]->
+  [ ]
+
+rule D_finish:
+  [ D_wait2(D,A,v,c,n,m), In(<A,D,h(v,m)>) ]
+  --[ Commit(D,A,<'AtoD',c,n,m>) ]->
+  [ ]
+
+lemma Sanity:
+  exists-trace
+  "(Ex A D c n m #i. Commit(A,D,<'DtoA',c,n,m>)@i)
+   & (Ex A D c n m #i. Commit(A,D,<'AtoD',c,n,m>)@i)
+   & not (Ex D c #k. BreakPUF(D,c)@k)
+   & not (Ex A D c #k. RevealCRP(A,D,c)@k)
+   & not (Ex D c #k. BreakGen(D,c)@k)
+   & not (Ex D #k. Model(D)@k)
+   & not (Ex D D2 #k. Collide(D,D2)@k)
+   & not (Ex D A c #k. RepFail(D,A,c)@k)"
+
+lemma modelPUF [reuse, use_induction]:
+  "All D #k. Model(D)@k ==>
+     (Ex G c #i. RevealCRP(G,D,c)@i & i < k)
+   | (Ex c #i. BreakPUF(D,c)@i & i < k)
+   | (Ex c #i. BreakGen(D,c)@i & i < k)
+   | (Ex D2 #i. Collide(D,D2)@i & i < k)
+   | (Ex D2 #i. Collide(D2,D)@i & i < k)"
+
+lemma Secrecy [reuse, use_induction]:
+  "All t c p #k. K(p)@k & p = puf(t,c) ==>
+     (Ex D G #m #i. Make(D,t)@m & RevealCRP(G,D,c)@i & i < k)
+   | (Ex D #m #i. Make(D,t)@m & BreakPUF(D,c)@i & i < k)
+   | (Ex D #m #i. Make(D,t)@m & BreakGen(D,c)@i & i < k)
+   | (Ex D #m #i. Make(D,t)@m & Model(D)@i & i < k)"
+
+lemma Auth:
+  "All B C x #t. Commit(B,C,x)@t ==>
+     ( (Ex #j. Run(C,B,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | ( (Ex c n m. x = <'DtoA',c,n,m>) &
+         ( (Ex G c2 #r. RevealCRP(G,C,c2)@r & r < t)
+         | (Ex c2 #r. BreakPUF(C,c2)@r & r < t)
+         | (Ex c2 #r. BreakGen(C,c2)@r & r < t)
+         | (Ex #r. Model(C)@r & r < t)
+         | (Ex D2 #r. Collide(C,D2)@r & r < t)
+         | (Ex D2 #r. Collide(D2,C)@r & r < t) ) )
+     | ( (Ex c n m. x = <'AtoD',c,n,m>) &
+         ( (Ex G c2 #r. RevealCRP(G,B,c2)@r & r < t)
+         | (Ex c2 #r. BreakPUF(B,c2)@r & r < t)
+         | (Ex c2 #r. BreakGen(B,c2)@r & r < t)
+         | (Ex #r. Model(B)@r & r < t)
+         | (Ex D2 #r. Collide(B,D2)@r & r < t)
+         | (Ex D2 #r. Collide(D2,B)@r & r < t) ) ) )"
+
+#ifdef SMALL_CAP
+
+lemma DeviceAuth_byClass:
+  "All A D x c n m #t. Commit(A,D,x)@t & x = <'DtoA',c,n,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex G #r. RevealCRP(G,D,c)@r & r < t)
+     | (Ex #r. BreakPUF(D,c)@r & r < t)
+     | (Ex #r. BreakGen(D,c)@r & r < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+#else
+
+lemma DeviceAuth_byClass:
+  "All A D x c n m #t. Commit(A,D,x)@t & x = <'DtoA',c,n,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex #r. RevealCRP(A,D,c)@r & r < t)
+     | (Ex #w #k. Start(A,D,c,n)@w & BreakPUF(D,c)@k & w < k & k < t)
+     | (Ex #w #k. Start(A,D,c,n)@w & BreakGen(D,c)@k & w < k & k < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+#endif
+
+lemma Contrast_ExactOrOnlineOnly:
+  "All A D x c n m #t. Commit(A,D,x)@t & x = <'DtoA',c,n,m> ==>
+     ( (Ex #j. Run(D,A,x)@j & j < t
+          & not (Ex E F #k. Commit(E,F,x)@k & not (#k = #t)))
+     | (Ex #r. RevealCRP(A,D,c)@r & r < t)
+     | (Ex #w #k. Start(A,D,c,n)@w & BreakPUF(D,c)@k & w < k & k < t)
+     | (Ex #w #k. Start(A,D,c,n)@w & BreakGen(D,c)@k & w < k & k < t)
+     | (Ex #r. Model(D)@r & r < t)
+     | (Ex D2 #r. Collide(D,D2)@r & r < t)
+     | (Ex D2 #r. Collide(D2,D)@r & r < t) )"
+
+lemma Burn:
+  "All A D c n #i #j. Start(A,D,c,n)@i & RepFail(D,A,c)@j ==>
+     not (Ex n2 #k. Start(A,D,c,n2)@k & #i < #k)"
+
+lemma Att_Collide:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,n,m>)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & (Ex D2 #k. Collide(D,D2)@k)
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G D1 c1 #k. RevealCRP(G,D1,c1)@k)
+     & not (Ex D1 c1 #k. BreakGen(D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Att_Gen:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,n,m>)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & (Ex #k. BreakGen(D,c)@k)
+     & not (Ex D1 c1 #k. BreakPUF(D1,c1)@k)
+     & not (Ex G D1 c1 #k. RevealCRP(G,D1,c1)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Att_Model:
+  exists-trace
+  "Ex A D c n m #i. Commit(A,D,<'DtoA',c,n,m>)@i
+     & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & (Ex #k. Model(D)@k)
+     & not (Ex G #k. RevealCRP(G,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k)
+     & not (Ex #k. BreakGen(D,c)@k)
+     & not (Ex D2 #k. Collide(D,D2)@k)"
+
+lemma Att_RepFail:
+  exists-trace
+  "Ex D A c #i. RepFail(D,A,c)@i"
+
+lemma ChallengeSecrecy [reuse, use_induction]:
+  "All c #k. K(c)@k & (Ex A D #e. CRP(A,D,c)@e) ==>
+     (Ex A D n #w. Start(A,D,c,n)@w & w < k)
+   | (Ex G D1 #r. RevealCRP(G,D1,c)@r & r < k)"
+
+lemma BreakNeedsChallenge [reuse]:
+  "All D c #k. BreakPUF(D,c)@k & (Ex A #e. CRP(A,D,c)@e) ==>
+     (Ex A n #w. Start(A,D,c,n)@w & w < k)
+   | (Ex G #r. RevealCRP(G,D,c)@r & r < k)"
+
+lemma Cost_000_none:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_001_RevSame:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_002_RevElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_003_BrkOnline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_004_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_005_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_006_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_007_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_008_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_009_RevSame_RevElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_010_RevSame_BrkOnline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_011_RevSame_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_012_RevSame_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_013_RevSame_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_014_RevSame_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_015_RevSame_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_016_RevElse_BrkOnline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_017_RevElse_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_018_RevElse_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_019_RevElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_020_RevElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_021_RevElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_022_BrkOnline_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_023_BrkOnline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_024_BrkOnline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_025_BrkOnline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_026_BrkOnline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_027_BrkOffline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_028_BrkOffline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_029_BrkOffline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_030_BrkOffline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_031_BrkElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_032_BrkElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_033_BrkElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_034_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_035_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_036_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_037_RevSame_RevElse_BrkOnline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_038_RevSame_RevElse_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_039_RevSame_RevElse_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_040_RevSame_RevElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_041_RevSame_RevElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_042_RevSame_RevElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_043_RevSame_BrkOnline_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_044_RevSame_BrkOnline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_045_RevSame_BrkOnline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_046_RevSame_BrkOnline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_047_RevSame_BrkOnline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_048_RevSame_BrkOffline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_049_RevSame_BrkOffline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_050_RevSame_BrkOffline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_051_RevSame_BrkOffline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_052_RevSame_BrkElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_053_RevSame_BrkElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_054_RevSame_BrkElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_055_RevSame_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_056_RevSame_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_057_RevSame_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_058_RevElse_BrkOnline_BrkOffline:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_059_RevElse_BrkOnline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_060_RevElse_BrkOnline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_061_RevElse_BrkOnline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_062_RevElse_BrkOnline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_063_RevElse_BrkOffline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_064_RevElse_BrkOffline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_065_RevElse_BrkOffline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_066_RevElse_BrkOffline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_067_RevElse_BrkElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_068_RevElse_BrkElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_069_RevElse_BrkElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_070_RevElse_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_071_RevElse_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_072_RevElse_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_073_BrkOnline_BrkOffline_BrkElse:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_074_BrkOnline_BrkOffline_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_075_BrkOnline_BrkOffline_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_076_BrkOnline_BrkOffline_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_077_BrkOnline_BrkElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_078_BrkOnline_BrkElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_079_BrkOnline_BrkElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_080_BrkOnline_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_081_BrkOnline_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_082_BrkOnline_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_083_BrkOffline_BrkElse_HelperLeak:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 #k. Model(D1)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_084_BrkOffline_BrkElse_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_085_BrkOffline_BrkElse_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_086_BrkOffline_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_087_BrkOffline_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_088_BrkOffline_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_089_BrkElse_HelperLeak_Model:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 D2 #k. Collide(D1,D2)@k)"
+
+lemma Cost_090_BrkElse_HelperLeak_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 #k. Model(D1)@k)"
+
+lemma Cost_091_BrkElse_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakGen(D1,c2)@k)"
+
+lemma Cost_092_HelperLeak_Model_Collide:
+  exists-trace
+  "Ex A D c n m #i #w. Start(A,D,c,n)@w & Commit(A,D,<'DtoA',c,n,m>)@i & not (Ex #j. Run(D,A,<'DtoA',c,n,m>)@j)
+     & not (Ex #k. RevealCRP(A,D,c)@k)
+     & not (Ex G D1 c2 #k. RevealCRP(G,D1,c2)@k & not (G = A & D1 = D & c2 = c))
+     & not (Ex #k. BreakPUF(D,c)@k & w < k)
+     & not (Ex #k. BreakPUF(D,c)@k & k < w)
+     & not (Ex D1 c2 #k. BreakPUF(D1,c2)@k & not (D1 = D & c2 = c))"
+
+end
